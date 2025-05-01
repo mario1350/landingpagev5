@@ -2,8 +2,19 @@ import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { ArrowRightIcon, ArrowLeftIcon, DollarSignIcon, PercentIcon, CalendarIcon, SunIcon, ZapIcon, BatteryChargingIcon, CheckCircleIcon } from 'lucide-react';
 import { useQuoteStore } from '../../context/QuoteContext';
+import { SavingsAnalysis } from '../../types';
 import { Button } from '../ui/Button';
-import { calculateMonthlyPayment, formatCurrency, calculateFinancialProjection } from '../../lib/utils';
+import { 
+  calculateMonthlyPayment, 
+  formatCurrency 
+} from '../../lib/utils';
+import {
+  calculateMonthlyBill,
+  calculateYearlyBills
+} from '../../lib/financialUtils';
+import { FirstYearSummary } from '../savings/FirstYearSummary';
+import { LifetimeSavings } from '../savings/LifetimeSavings';
+import { YearlyBreakdown } from '../savings/YearlyBreakdown';
 import { cn } from '../../lib/utils';
 
 // Credit score ranges
@@ -38,6 +49,14 @@ export const FinancingOptions: React.FC = () => {
   const [creditScore, setCreditScore] = useState<string>('excellent');
   const [isLoading, setIsLoading] = useState(false);
   const [calculationResults, setCalculationResults] = useState(initialCalculationResults);
+  const [savingsAnalysis, setSavingsAnalysis] = useState<SavingsAnalysis | null>(null);
+
+  useEffect(() => {
+    // Initial calculation
+    if (systemSummary && calculationResults) {
+      calculateFinancialDetails();
+    }
+  }, []);
   
   // Calculate financial details based on current selections
   const calculateFinancialDetails = () => {
@@ -57,20 +76,62 @@ export const FinancingOptions: React.FC = () => {
       monthlyPayment: monthlyPayment,
       totalPayments: monthlyPayment * selectedTerm * 12
     };
+
+    // Calculate utility bills and savings
+    const startDate = new Date('2025-04-15'); // Start from April 2025
+    const monthlyConsumption = calculationResults.consumoDesignadoFinal;
     
-    const projection = calculateFinancialProjection(
-      calculationResults.consumoDesignadoFinal,
-      calculationResults.produccionMensualEstimada,
-      monthlyPayment,
-      25 // 25 year system lifespan
+    // Calculate old utility bills (without solar)
+    const { yearlyBills: oldYearlyBills, totalBill: oldUtilityTotal } = calculateYearlyBills(
+      monthlyConsumption,
+      startDate,
+      25 // 25 year projection
     );
-    
-    const newCalculationResults = {
-      ...calculationResults,
-      ...projection
+
+    // Calculate new utility bills (with solar - should be 0 since we oversize)
+    const { totalBill: newUtilityTotal } = calculateYearlyBills(
+      0, // No remaining consumption with solar
+      startDate,
+      25
+    );
+
+    // Calculate total loan payments
+    const totalLoanPayments = monthlyPayment * selectedTerm * 12;
+
+    // Calculate savings analysis
+    const analysis: SavingsAnalysis = {
+      originalMonthlyBill: calculateMonthlyBill(monthlyConsumption, startDate),
+      yearOneSavings: oldYearlyBills[0] - (monthlyPayment * 12), // First year savings
+      oldUtilityTotal,
+      totalLoanPayments,
+      totalSavings: oldUtilityTotal - totalLoanPayments,
+      breakevenYear: 0, // Will be calculated below
+      yearlyData: []
     };
+
+    // Calculate yearly data
+    let cumulativeSavings = 0;
+    analysis.yearlyData = oldYearlyBills.map((yearlyBill: number, index: number) => {
+      const year = 2025 + index;
+      const yearlySolarPayment = index < selectedTerm ? monthlyPayment * 12 : 0;
+      const yearlySavings = yearlyBill - yearlySolarPayment;
+      cumulativeSavings += yearlySavings;
+
+      // Find breakeven year
+      if (cumulativeSavings >= totalLoanPayments && analysis.breakevenYear === 0) {
+        analysis.breakevenYear = index + 1;
+      }
+
+      return {
+        year,
+        yearlySavings,
+        cumulativeSavings
+      };
+    });
     
-    return { financialSummary, newCalculationResults };
+    setSavingsAnalysis(analysis);
+    
+    return { financialSummary };
   };
   
   // Handle term selection
@@ -79,8 +140,6 @@ export const FinancingOptions: React.FC = () => {
     const results = calculateFinancialDetails();
     if (results) {
       updateFinancialSummary(results.financialSummary);
-      updateCalculationResults(results.newCalculationResults);
-      setCalculationResults(results.newCalculationResults);
     }
   };
   
@@ -90,8 +149,6 @@ export const FinancingOptions: React.FC = () => {
     const results = calculateFinancialDetails();
     if (results) {
       updateFinancialSummary(results.financialSummary);
-      updateCalculationResults(results.newCalculationResults);
-      setCalculationResults(results.newCalculationResults);
     }
   };
   
@@ -243,38 +300,26 @@ export const FinancingOptions: React.FC = () => {
           </div>
         </div>
         
-        {/* Savings Comparison */}
-        <div className="mb-8 p-6 bg-success-50 rounded-lg">
-          <h3 className="text-lg font-semibold mb-4">Comparación de Ahorros</h3>
-          
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div className="bg-white p-4 rounded-lg shadow-sm">
-              <h4 className="text-sm font-medium text-gray-500 mb-2">Pago Mensual Solar</h4>
-              <p className="text-2xl font-bold text-primary-600">{formatCurrency(monthlyPayment)}</p>
-              <p className="text-sm text-gray-500 mt-1">Fijo durante {selectedTerm} años</p>
-            </div>
+        {/* Savings Analysis */}
+        {savingsAnalysis && (
+          <div className="mb-8 p-6 bg-success-50 rounded-lg">
+            <FirstYearSummary
+              originalMonthlyBill={savingsAnalysis.originalMonthlyBill}
+              yearOneSavings={savingsAnalysis.yearOneSavings}
+            />
             
-            <div className="bg-white p-4 rounded-lg shadow-sm">
-              <h4 className="text-sm font-medium text-gray-500 mb-2">Ahorro Mensual Estimado</h4>
-              <p className="text-2xl font-bold text-success-600">{formatCurrency(estimatedMonthlySavings)}</p>
-              <p className="text-sm text-gray-500 mt-1">Aumenta con la inflación de LUMA</p>
-            </div>
+            <LifetimeSavings
+              oldUtilityTotal={savingsAnalysis.oldUtilityTotal}
+              totalLoanPayments={savingsAnalysis.totalLoanPayments}
+              totalSavings={savingsAnalysis.totalSavings}
+            />
+            
+            <YearlyBreakdown
+              yearlyData={savingsAnalysis.yearlyData}
+              breakevenYear={savingsAnalysis.breakevenYear}
+            />
           </div>
-          
-          <div className="mt-4 bg-white p-4 rounded-lg shadow-sm">
-            <div className="flex justify-between items-center">
-              <h4 className="text-sm font-medium text-gray-500">Ahorro Durante la Vida Útil</h4>
-              <p className="text-xl font-bold text-success-600">{formatCurrency(calculationResults.lifetimeSavings)}</p>
-            </div>
-            <div className="w-full bg-gray-200 h-2 rounded-full mt-2 overflow-hidden">
-              <div 
-                className="bg-success-500 h-full rounded-full" 
-                style={{ width: `${Math.min(100, (calculationResults.lifetimeSavings / totalPayments) * 100)}%` }}
-              ></div>
-            </div>
-            <p className="text-xs text-gray-500 mt-1">ROI en aproximadamente {calculationResults.paybackPeriod} años</p>
-          </div>
-        </div>
+        )}
         
         <div className="mt-8 flex justify-between">
           <Button 
